@@ -2,7 +2,10 @@ from fastapi import FastAPI
 from app.schemas import Payment
 from app.risk_engine import calculate_risk
 from app.ai_engine import diagnose_payment
+from app.database import engine, Base
+from app import models
 
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="RecoverAI",
