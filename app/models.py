@@ -8,6 +8,6 @@ class Payment(Base):
     amount = Column(Float, nullable= False)
     payment_method = Column(String, nullable= False)
     status = Column(String, nullable= False)
-    failure_reason = Column(String, nullable= False)
+    failure_reason = Column(String, nullable= True)
     revenue_at_risk = Column(Float, default= 0)
     risk_score = Column(Float, default=0)
