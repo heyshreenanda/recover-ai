@@ -17,5 +17,7 @@ class PaymentResponse(BaseModel):
     failure_reason: str | None = None
     revenue_at_risk: float
     risk_score: float
+    recovery_action: str | None = None
+    recovery_message: str | None = None
     class Config:
         from_attributes = True

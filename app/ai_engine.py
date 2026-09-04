@@ -1,30 +1,59 @@
-def diagnose_payment(payment):
-    if payment.status != "failed":
-        return {
-            "root_cause":"No failure",
-            "recovery_probability": 0,
-            "recommended_action":"no_action",
-            "confidence": 1.0
-        }
-    if payment.failure_reason == "authorization_failure":
-            return {
-                "root_cause":"Card authorization failure",
-                "recovery_probability": 0.85,
-                "recommended_action":"payment_retry",
-                "confidence": 0.92
-            }
+import os
+from openai import OpenAI
 
-    if payment.failure_reason == "timeout":
-                return {
-                    "root_cause":"Temporary payment timeout",
-                    "recovery_probability": 0.70,
-                    "recommended_action":"payment_retry",
-                    "confidence": 0.85
-                }
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-    return {
-           "root_cause":"Unknown payment failure",
-                               "recovery_probability": 0.40,
-                               "recommended_action":"send_reminder",
-                               "confidence": 0.60
-    }
+
+def generate_recovery_message(payment, recovery_action):
+
+    if recovery_action == "no_action":
+        return f"Hi {payment.customer_name}, your payment of ₹{payment.amount} was completed successfully. Thank you for your payment."
+
+    if recovery_action == "manual_review":
+        prompt = f"""
+Generate a professional recovery message for a failed payment.
+
+Customer: {payment.customer_name}
+Amount: ₹{payment.amount}
+Failure reason: {payment.failure_reason}
+Recovery action: manual review
+
+Explain that the payment requires additional review.
+Keep the message under 40 words.
+Do not mention internal risk scores.
+"""
+
+    elif recovery_action == "payment_retry":
+        prompt = f"""
+Generate a professional recovery message for a failed payment.
+
+Customer: {payment.customer_name}
+Amount: ₹{payment.amount}
+Failure reason: {payment.failure_reason}
+Recovery action: payment retry
+
+Ask the customer to retry the payment.
+Keep the message under 40 words.
+Do not mention internal risk scores.
+"""
+
+    elif recovery_action == "retry_and_notify":
+        prompt = f"""
+Generate a professional recovery message for a failed payment.
+
+Customer: {payment.customer_name}
+Amount: ₹{payment.amount}
+Failure reason: {payment.failure_reason}
+Recovery action: retry and notify
+
+Tell the customer to retry the payment and explain that they will be notified about updates.
+Keep the message under 40 words.
+Do not mention internal risk scores.
+"""
+
+    response = client.responses.create(
+        model="gpt-4o-mini",
+        input=prompt
+    )
+
+    return response.output_text

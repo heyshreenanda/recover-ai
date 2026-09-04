@@ -11,3 +11,5 @@ class Payment(Base):
     failure_reason = Column(String, nullable= True)
     revenue_at_risk = Column(Float, default= 0)
     risk_score = Column(Float, default=0)
+    recovery_action = Column(String, nullable=True)
+    recovery_message = Column(String)

@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from app.schemas import Payment, PaymentResponse
 from app.risk_engine import calculate_risk
-from app.ai_engine import diagnose_payment
+from app.ai_engine import generate_recovery_message
 from app.database import engine, Base, SessionLocal
 from app import models
+from app.recovery_engine import recovery_decision
+from app.ai_engine import generate_recovery_message
 
 Base.metadata.create_all(bind=engine)
 
@@ -25,11 +27,17 @@ def create_payment(payment: Payment):
     
     revenue_at_risk = 0
 
+    
+
     if payment.status == "failed":
         revenue_at_risk = payment.amount
+    else:
+        revenue_at_risk = 0
 
     risk_score = calculate_risk(payment)
-    #diagnosis = diagnose_payment(payment)
+
+    recovery_action = recovery_decision(payment, risk_score)
+    recovery_message = generate_recovery_message(payment, recovery_action)
 
     db_payment = models.Payment(
             customer_name = payment.customer_name,
@@ -38,7 +46,10 @@ def create_payment(payment: Payment):
             status = payment.status,
             failure_reason = payment.failure_reason,
             revenue_at_risk = revenue_at_risk,
-            risk_score=risk_score)
+            risk_score=risk_score,
+            recovery_action=recovery_action,
+            recovery_message=recovery_message
+            )
     
     db.add(db_payment)
     db.commit()
