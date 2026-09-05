@@ -7,16 +7,28 @@ class Payment(Base):
 
     __tablename__ = "payments"
 
+    # ============================================================
+    # PRIMARY KEY
+    # ============================================================
+
     id = Column(
         Integer,
         primary_key=True,
         index=True
     )
 
+    # ============================================================
+    # CUSTOMER INFORMATION
+    # ============================================================
+
     customer_name = Column(
         String,
         index=True
     )
+
+    # ============================================================
+    # PAYMENT INFORMATION
+    # ============================================================
 
     amount = Column(
         Float
@@ -35,6 +47,26 @@ class Payment(Base):
         nullable=True
     )
 
+    # ============================================================
+    # RAZORPAY TRANSACTION INFORMATION
+    # ============================================================
+
+    razorpay_payment_id = Column(
+        String,
+        nullable=True,
+        index=True
+    )
+
+    razorpay_order_id = Column(
+        String,
+        nullable=True,
+        index=True
+    )
+
+    # ============================================================
+    # RECOVERAI RISK INFORMATION
+    # ============================================================
+
     revenue_at_risk = Column(
         Float,
         default=0
@@ -45,8 +77,13 @@ class Payment(Base):
         default=0
     )
 
+    # ============================================================
+    # RECOVERY INFORMATION
+    # ============================================================
+
     recovery_action = Column(
-        String
+        String,
+        nullable=True
     )
 
     recovery_status = Column(

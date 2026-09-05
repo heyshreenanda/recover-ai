@@ -121,3 +121,11 @@ class FailedPaymentRequest(BaseModel):
     payment_method: str
 
     failure_reason: Optional[str] = "payment_failed"
+
+
+
+class PaymentCreate(BaseModel):
+    amount: float
+    customer_name: str
+    payment_method: str
+    failure_reason: str

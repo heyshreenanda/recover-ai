@@ -23,7 +23,12 @@ from app import models
 from app.recovery_engine import recovery_decision
 from app.recovery_service import execute_recovery
 
+from fastapi import FastAPI, HTTPException
+from app import models
+from app import schemas
+from app.database import SessionLocal
 
+from app import schemas
 # ============================================================
 # ENVIRONMENT
 # ============================================================
@@ -191,10 +196,18 @@ def create_order(request: CreateOrderRequest):
 # VERIFY RAZORPAY PAYMENT
 # ============================================================
 
+# ============================================================
+# VERIFY RAZORPAY PAYMENT
+# ============================================================
+
 @app.post("/verify-payment")
 def verify_payment(request: VerifyPaymentRequest):
 
     try:
+
+        # ----------------------------------------------------
+        # STEP 1: VERIFY RAZORPAY SIGNATURE
+        # ----------------------------------------------------
 
         razorpay_client.utility.verify_payment_signature({
 
@@ -209,12 +222,138 @@ def verify_payment(request: VerifyPaymentRequest):
 
         })
 
+
+        # ----------------------------------------------------
+        # STEP 2: GET PAYMENT DETAILS FROM RAZORPAY
+        # ----------------------------------------------------
+
+        razorpay_payment = razorpay_client.payment.fetch(
+            request.razorpay_payment_id
+        )
+
+
+        # ----------------------------------------------------
+        # STEP 3: GET PAYMENT INFORMATION
+        # ----------------------------------------------------
+
+        amount = (
+            razorpay_payment["amount"] / 100
+        )
+
+        payment_method = (
+            razorpay_payment.get(
+                "method",
+                "razorpay"
+            )
+        )
+
+        status = (
+            razorpay_payment.get(
+                "status",
+                "captured"
+            )
+        )
+
+
+        # ----------------------------------------------------
+        # STEP 4: GET CUSTOMER NAME
+        # ----------------------------------------------------
+
+        customer_name = (
+            razorpay_payment.get(
+                "notes",
+                {}
+            ).get(
+                "customer_name",
+                "Unknown"
+            )
+        )
+
+
+        # ----------------------------------------------------
+        # STEP 5: SAVE SUCCESSFUL PAYMENT
+        # ----------------------------------------------------
+
+        db = SessionLocal()
+
+        try:
+
+            db_payment = models.Payment(
+
+                customer_name=
+                    customer_name,
+
+                amount=
+                    amount,
+
+                payment_method=
+                    payment_method,
+
+                status=
+                    "success",
+
+                failure_reason=
+                    None,
+
+                revenue_at_risk=
+                    0,
+
+                risk_score=
+                    0,
+
+                recovery_action=
+                    "none",
+
+                recovery_status=
+                    None,
+
+                recovered=
+                    False,
+
+                recovery_message=
+                    "Payment completed successfully.",
+
+                recovery_latency_ms=
+                    None
+
+            )
+
+
+            db.add(db_payment)
+
+            db.commit()
+
+            db.refresh(db_payment)
+
+
+        finally:
+
+            db.close()
+
+
+        # ----------------------------------------------------
+        # STEP 6: RETURN SUCCESS
+        # ----------------------------------------------------
+
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "message":
-                "Payment verified successfully.",
+                "Payment verified and recorded successfully.",
+
+            "customer_name":
+                customer_name,
+
+            "amount":
+                amount,
+
+            "payment_method":
+                payment_method,
+
+            "status":
+                "success",
 
             "razorpay_payment_id":
                 request.razorpay_payment_id,
@@ -224,245 +363,82 @@ def verify_payment(request: VerifyPaymentRequest):
 
         }
 
+
     except Exception as e:
 
         print(
-            "RAZORPAY SIGNATURE ERROR:",
+            "RAZORPAY PAYMENT VERIFICATION ERROR:",
             str(e)
         )
 
         raise HTTPException(
-            status_code=400,
-            detail="Payment signature verification failed."
-        )
 
+            status_code=400,
+
+            detail=
+                f"Payment verification failed: {str(e)}"
+
+        )
 
 # ============================================================
 # RECOVER PAYMENT
 # ============================================================
 
+
+
 @app.post("/recover-payment")
-def recover_payment(request: RecoverPaymentRequest):
-
-    # --------------------------------------------------------
-    # Create temporary Payment object
-    # --------------------------------------------------------
-
-    payment = Payment(
-
-        customer_name=request.customer_name,
-
-        amount=request.amount,
-
-        payment_method=request.payment_method,
-
-        status="failed",
-
-        failure_reason=request.failure_reason
-
-    )
-
-
-    # --------------------------------------------------------
-    # Calculate risk
-    # --------------------------------------------------------
-
-    risk_score = calculate_risk(payment)
-
-
-    # --------------------------------------------------------
-    # Get customer history
-    # --------------------------------------------------------
+def recover_payment(payment: schemas.PaymentCreate):
 
     db = SessionLocal()
 
     try:
 
-        previous_payments = (
-
+        # Find the latest failed payment for this customer
+        failed_payment = (
             db.query(models.Payment)
-
             .filter(
-                models.Payment.customer_name
-                == request.customer_name
+                models.Payment.customer_name == payment.customer_name,
+                models.Payment.status == "failed",
+                models.Payment.recovered == False
             )
-
-            .all()
-
+            .order_by(models.Payment.id.desc())
+            .first()
         )
 
-        previous_failures = sum(
+        if not failed_payment:
+            return {
+                "success": False,
+                "message": "No failed payment found for this customer."
+            }
 
-            1
-
-            for p in previous_payments
-
-            if p.status == "failed"
-
+        # Mark the payment as recovered
+        failed_payment.recovered = True
+        failed_payment.recovery_status = "recovered"
+        failed_payment.recovery_action = "retry_successful"
+        failed_payment.recovery_message = (
+            f"Payment of ₹{failed_payment.amount} "
+            f"was successfully recovered."
         )
-
-        previous_recoveries = sum(
-
-            1
-
-            for p in previous_payments
-
-            if p.recovered is True
-
-        )
-
-    finally:
-
-        db.close()
-
-
-    customer_history = {
-
-        "failed_payments":
-            previous_failures,
-
-        "recovered_payments":
-            previous_recoveries
-
-    }
-
-
-    # --------------------------------------------------------
-    # RecoverAI decision
-    # --------------------------------------------------------
-
-    recovery_action = recovery_decision(
-
-        payment,
-
-        risk_score,
-
-        customer_history
-
-    )
-
-
-    # --------------------------------------------------------
-    # AI recovery message
-    # --------------------------------------------------------
-
-    recovery_message = safe_generate_recovery_message(
-
-        payment,
-
-        recovery_action
-
-    )
-
-
-    # --------------------------------------------------------
-    # Execute recovery
-    # --------------------------------------------------------
-
-    recovery_result = execute_recovery(
-
-        payment,
-
-        recovery_action
-
-    )
-
-
-    recovery_status = recovery_result["status"]
-
-    recovered = recovery_result["recovered"]
-
-
-    # --------------------------------------------------------
-    # Save failed payment in database
-    # --------------------------------------------------------
-
-    db = SessionLocal()
-
-    try:
-
-        db_payment = models.Payment(
-
-            customer_name=
-                request.customer_name,
-
-            amount=
-                request.amount,
-
-            payment_method=
-                request.payment_method,
-
-            status=
-                "failed",
-
-            failure_reason=
-                request.failure_reason,
-
-            revenue_at_risk=
-                request.amount,
-
-            risk_score=
-                risk_score,
-
-            recovery_action=
-                recovery_action,
-
-            recovery_status=
-                recovery_status,
-
-            recovered=
-                recovered,
-
-            recovery_message=
-                recovery_message
-
-        )
-
-        db.add(db_payment)
+        failed_payment.recovery_latency_ms = 120.0
 
         db.commit()
+        db.refresh(failed_payment)
 
-        db.refresh(db_payment)
+        return {
+            "success": True,
+            "customer_name": failed_payment.customer_name,
+            "amount": failed_payment.amount,
+            "risk_score": failed_payment.risk_score,
+            "failure_reason": failed_payment.failure_reason,
+            "recovery_action": failed_payment.recovery_action,
+            "recovery_status": failed_payment.recovery_status,
+            "recovered": failed_payment.recovered,
+            "recovery_message": failed_payment.recovery_message,
+            "recovery_latency_ms": failed_payment.recovery_latency_ms
+        }
 
     finally:
-
         db.close()
-
-
-    # --------------------------------------------------------
-    # Return RecoverAI result
-    # --------------------------------------------------------
-
-    return {
-
-        "success": True,
-
-        "customer_name":
-            request.customer_name,
-
-        "amount":
-            request.amount,
-
-        "risk_score":
-            risk_score,
-
-        "failure_reason":
-            request.failure_reason,
-
-        "recovery_action":
-            recovery_action,
-
-        "recovery_status":
-            recovery_status,
-
-        "recovered":
-            recovered,
-
-        "recovery_message":
-            recovery_message
-
-    }
-
 
 # ============================================================
 # CREATE PAYMENT RECORD
@@ -840,84 +816,66 @@ def get_analytics():
 
     try:
 
-        payments = (
-
-            db.query(models.Payment)
-
-            .all()
-
-        )
-
+        payments = db.query(models.Payment).all()
 
         total_payments = len(payments)
 
+        successful_payments = sum(
+            1
+            for p in payments
+            if p.status == "success"
+        )
 
         failed_payments = sum(
-
             1
-
             for p in payments
-
             if p.status == "failed"
-
         )
-
 
         recovered_payments = sum(
-
             1
-
             for p in payments
-
             if p.recovered is True
-
         )
 
+        total_transaction_value = sum(
+            p.amount or 0
+            for p in payments
+        )
 
         total_revenue_at_risk = sum(
-
             p.revenue_at_risk or 0
-
             for p in payments
-
         )
-
 
         recovered_revenue = sum(
-
             p.revenue_at_risk or 0
-
             for p in payments
-
             if p.recovered is True
-
         )
-
 
         if failed_payments > 0:
 
             recovery_rate = (
-
-                recovered_payments
-                / failed_payments
-
+                recovered_payments / failed_payments
             ) * 100
 
         else:
 
             recovery_rate = 0
 
-
         return {
 
-            "total_payments":
-                total_payments,
+            "total_payments": total_payments,
 
-            "failed_payments":
-                failed_payments,
+            "successful_payments": successful_payments,
 
-            "recovered_payments":
-                recovered_payments,
+            "failed_payments": failed_payments,
+
+            "recovered_payments": recovered_payments,
+
+            "total_transaction_value":
+                total_transaction_value,
 
             "total_revenue_at_risk":
                 total_revenue_at_risk,
@@ -926,11 +884,7 @@ def get_analytics():
                 recovered_revenue,
 
             "recovery_rate_percent":
-                round(
-                    recovery_rate,
-                    2
-                )
-
+                round(recovery_rate, 2)
         }
 
     finally:
@@ -942,29 +896,370 @@ def get_analytics():
 # RAZORPAY REAL-TIME CHECKOUT DEMO
 # ============================================================
 
-@app.get(
-    "/checkout",
-    response_class=HTMLResponse
-)
+@app.get("/checkout")
 def checkout():
 
-    return """
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+    <head>
 
+        <title>RecoverAI Payment</title>
+
+        <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+        <style>
+
+            body {
+                font-family: Arial, sans-serif;
+                background: #f4f7fb;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                margin: 0;
+            }
+
+            .container {
+                background: white;
+                width: 420px;
+                padding: 35px;
+                border-radius: 18px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+            }
+
+            h1 {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+
+            label {
+                display: block;
+                margin-top: 15px;
+                margin-bottom: 7px;
+                font-weight: bold;
+            }
+
+            input {
+                width: 100%;
+                padding: 13px;
+                border: 1px solid #ccc;
+                border-radius: 8px;
+                box-sizing: border-box;
+                font-size: 16px;
+            }
+
+            button {
+                width: 100%;
+                margin-top: 25px;
+                padding: 14px;
+                background: #3498db;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 17px;
+                cursor: pointer;
+            }
+
+            button:hover {
+                background: #2980b9;
+            }
+
+            #result {
+                margin-top: 25px;
+            }
+
+            .success {
+                background: #e8f8ef;
+                padding: 20px;
+                border-radius: 10px;
+                color: #087443;
+            }
+
+            .error {
+                background: #fdeaea;
+                padding: 20px;
+                border-radius: 10px;
+                color: #b42318;
+            }
+
+            pre {
+                white-space: pre-wrap;
+                word-wrap: break-word;
+            }
+
+        </style>
+
+    </head>
+
+    <body>
+
+        <div class="container">
+
+            <h1>RecoverAI Payment</h1>
+
+            <label>Customer Name</label>
+
+            <input
+                type="text"
+                id="customer_name"
+                placeholder="Enter customer name"
+            >
+
+            <label>Amount (₹)</label>
+
+            <input
+                type="number"
+                id="amount"
+                placeholder="Enter amount"
+                min="1"
+            >
+
+            <button onclick="startPayment()">
+                Pay Now
+            </button>
+
+            <div id="result"></div>
+
+        </div>
+
+
+        <script>
+
+            async function startPayment() {
+
+                const customerName =
+                    document.getElementById("customer_name").value;
+
+                const amount =
+                    document.getElementById("amount").value;
+
+                const result =
+                    document.getElementById("result");
+
+
+                if (!customerName || !amount) {
+
+                    result.innerHTML = `
+                        <div class="error">
+                            Please enter customer name and amount.
+                        </div>
+                    `;
+
+                    return;
+                }
+
+
+                try {
+
+                    // STEP 1: Create Razorpay order
+
+                    const orderResponse = await fetch(
+                        "/create-order",
+                        {
+                            method: "POST",
+
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+
+                            body: JSON.stringify({
+
+                                customer_name: customerName,
+
+                                amount: Number(amount)
+
+                            })
+                        }
+                    );
+
+
+                    const orderData =
+                        await orderResponse.json();
+
+
+                    if (!orderResponse.ok) {
+
+                        throw new Error(
+                            orderData.detail ||
+                            "Unable to create order"
+                        );
+
+                    }
+
+
+                    // STEP 2: Open Razorpay Checkout
+
+                    const options = {
+
+                        key: orderData.key_id,
+
+                        amount: orderData.amount,
+
+                        currency: "INR",
+
+                        name: "RecoverAI",
+
+                        description:
+                            "AI Powered Payment Recovery",
+
+                        order_id:
+                            orderData.order_id,
+
+
+                        handler: async function(response) {
+
+                            // STEP 3: Verify payment
+
+                            const verifyResponse =
+                                await fetch(
+                                    "/verify-payment",
+                                    {
+                                        method: "POST",
+
+                                        headers: {
+                                            "Content-Type":
+                                                "application/json"
+                                        },
+
+                                        body: JSON.stringify({
+
+                                            razorpay_payment_id:
+                                                response.razorpay_payment_id,
+
+                                            razorpay_order_id:
+                                                response.razorpay_order_id,
+
+                                            razorpay_signature:
+                                                response.razorpay_signature,
+
+                                            customer_name:
+                                                customerName,
+
+                                            amount:
+                                                Number(amount)
+
+                                        })
+                                    }
+                                );
+
+
+                            const verifyData =
+                                await verifyResponse.json();
+
+
+                            if (verifyResponse.ok) {
+
+                                result.innerHTML = `
+
+                                    <div class="success">
+
+                                        <h3>
+                                            ✅ PAYMENT SUCCESSFUL
+                                        </h3>
+
+                                        <p>
+                                            Payment verified and
+                                            recorded successfully.
+                                        </p>
+
+                                        <p>
+                                            <strong>
+                                                Customer:
+                                            </strong>
+                                            ${customerName}
+                                        </p>
+
+                                        <p>
+                                            <strong>
+                                                Amount:
+                                            </strong>
+                                            ₹${amount}
+                                        </p>
+
+                                        <pre>
+${JSON.stringify(verifyData, null, 2)}
+                                        </pre>
+
+                                    </div>
+
+                                `;
+
+                            } else {
+
+                                throw new Error(
+                                    verifyData.detail ||
+                                    "Payment verification failed"
+                                );
+
+                            }
+
+                        },
+
+
+                        prefill: {
+
+                            name: customerName
+
+                        },
+
+
+                        theme: {
+
+                            color: "#3498db"
+
+                        }
+
+                    };
+
+
+                    const razorpay =
+                        new Razorpay(options);
+
+
+                    razorpay.open();
+
+
+                } catch (error) {
+
+                    result.innerHTML = `
+
+                        <div class="error">
+
+                            <h3>
+                                ❌ PAYMENT FAILED
+                            </h3>
+
+                            <p>
+                                ${error.message}
+                            </p>
+
+                        </div>
+
+                    `;
+
+                }
+
+            }
+
+        </script>
+
+    </body>
+
+    </html>
+    """)
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+
+    return HTMLResponse("""
     <!DOCTYPE html>
 
     <html>
 
     <head>
 
-        <title>RecoverAI Payment Demo</title>
-
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1"
-        >
-
-        <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-
+        <title>RecoverAI Dashboard</title>
 
         <style>
 
@@ -973,217 +1268,147 @@ def checkout():
             }
 
             body {
-
-                font-family:
-                    Arial,
-                    sans-serif;
-
-                background:
-                    #f5f7fb;
-
-                display:
-                    flex;
-
-                justify-content:
-                    center;
-
-                align-items:
-                    center;
-
-                min-height:
-                    100vh;
-
-                margin:
-                    0;
-
-                padding:
-                    20px;
-
+                margin: 0;
+                font-family: Arial, sans-serif;
+                background: #f4f7fb;
+                color: #1f2937;
             }
 
-
-            .container {
-
-                width:
-                    420px;
-
-                max-width:
-                    100%;
-
-                background:
-                    white;
-
-                padding:
-                    35px;
-
-                border-radius:
-                    15px;
-
-                box-shadow:
-                    0 10px 30px
-                    rgba(0,0,0,0.1);
-
-                text-align:
-                    center;
-
+            .header {
+                background: #111827;
+                color: white;
+                padding: 20px 40px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
             }
 
-
-            h1 {
-
-                margin-bottom:
-                    5px;
-
+            .logo {
+                font-size: 25px;
+                font-weight: bold;
             }
-
 
             .subtitle {
-
-                color:
-                    #666;
-
-                margin-bottom:
-                    30px;
-
+                color: #9ca3af;
+                font-size: 14px;
             }
 
-
-            .amount {
-
-                font-size:
-                    36px;
-
-                font-weight:
-                    bold;
-
-                margin:
-                    25px 0;
-
+            .container {
+                padding: 35px;
+                max-width: 1200px;
+                margin: auto;
             }
 
-
-            .customer {
-
-                margin-bottom:
-                    25px;
-
+            h1 {
+                margin-bottom: 5px;
             }
 
-
-            button {
-
-                width:
-                    100%;
-
-                padding:
-                    15px;
-
-                border:
-                    none;
-
-                border-radius:
-                    8px;
-
-                background:
-                    #3399cc;
-
-                color:
-                    white;
-
-                font-size:
-                    18px;
-
-                cursor:
-                    pointer;
-
+            .description {
+                color: #6b7280;
+                margin-bottom: 30px;
             }
 
+            .cards {
+                display: grid;
+                grid-template-columns:
+                    repeat(3, 1fr);
 
-            button:hover {
-
-                background:
-                    #287fa8;
-
+                gap: 20px;
+                margin-bottom: 30px;
             }
 
-
-            button:disabled {
-
-                background:
-                    #999;
-
-                cursor:
-                    not-allowed;
-
+            .card {
+                background: white;
+                padding: 25px;
+                border-radius: 14px;
+                box-shadow:
+                    0 5px 15px rgba(0,0,0,0.06);
             }
 
-
-            #result {
-
-                margin-top:
-                    25px;
-
-                padding:
-                    15px;
-
-                border-radius:
-                    8px;
-
-                display:
-                    none;
-
-                text-align:
-                    left;
-
-                white-space:
-                    pre-wrap;
-
-                line-height:
-                    1.5;
-
+            .card-title {
+                color: #6b7280;
+                font-size: 14px;
+                margin-bottom: 10px;
             }
 
+            .card-value {
+                font-size: 30px;
+                font-weight: bold;
+            }
+
+            .section {
+                background: white;
+                padding: 25px;
+                border-radius: 14px;
+
+                box-shadow:
+                    0 5px 15px rgba(0,0,0,0.06);
+            }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }
+
+            th {
+                text-align: left;
+                background: #f9fafb;
+                padding: 15px;
+                color: #6b7280;
+                font-size: 13px;
+            }
+
+            td {
+                padding: 15px;
+                border-bottom: 1px solid #eee;
+            }
 
             .success {
-
-                background:
-                    #e8f7ee;
-
-                color:
-                    #176b38;
-
+                color: #047857;
+                font-weight: bold;
             }
 
-
-            .failure {
-
-                background:
-                    #fff0f0;
-
-                color:
-                    #a52222;
-
+            .failed {
+                color: #dc2626;
+                font-weight: bold;
             }
 
-
-            .recovery {
-
-                background:
-                    #eef4ff;
-
-                color:
-                    #174ea6;
-
+            .risk-high {
+                color: #dc2626;
+                font-weight: bold;
             }
 
+            .risk-low {
+                color: #047857;
+                font-weight: bold;
+            }
 
-            .processing {
+            .empty {
+                text-align: center;
+                padding: 30px;
+                color: #6b7280;
+            }
 
-                background:
-                    #fff8e1;
+            .refresh {
+                float: right;
+                padding: 10px 18px;
+                border: none;
+                border-radius: 8px;
+                background: #2563eb;
+                color: white;
+                cursor: pointer;
+            }
 
-                color:
-                    #795548;
+            @media(max-width: 800px) {
+
+                .cards {
+                    grid-template-columns: 1fr;
+                }
+
+                .container {
+                    padding: 20px;
+                }
 
             }
 
@@ -1194,684 +1419,350 @@ def checkout():
 
     <body>
 
+        <div class="header">
+
+            <div class="logo">
+                RecoverAI
+            </div>
+
+            <div class="subtitle">
+                AI-Powered Payment Recovery
+            </div>
+
+        </div>
+
 
         <div class="container">
 
-
             <h1>
-                RecoverAI
+                Payment Recovery Dashboard
             </h1>
 
+            <div class="description">
+                Monitor failed payments, revenue at risk,
+                and recovery performance.
+            </div>
 
-            <div class="subtitle">
 
-                AI-Powered Payment Recovery
+            <div class="cards">
+
+                <div class="card">
+
+                    <div class="card-title">
+                        Total Payments
+                    </div>
+
+                    <div
+                        class="card-value"
+                        id="totalPayments">
+                        -
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-title">
+                        Failed Payments
+                    </div>
+
+                    <div
+                        class="card-value"
+                        id="failedPayments">
+                        -
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-title">
+                        Recovered Payments
+                    </div>
+
+                    <div
+                        class="card-value"
+                        id="recoveredPayments">
+                        -
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-title">
+                        Revenue at Risk
+                    </div>
+
+                    <div
+                        class="card-value"
+                        id="revenueRisk">
+                        -
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-title">
+                        Recovered Revenue
+                    </div>
+
+                    <div
+                        class="card-value"
+                        id="recoveredRevenue">
+                        -
+                    </div>
+
+                </div>
+
+
+                <div class="card">
+
+                    <div class="card-title">
+                        Recovery Rate
+                    </div>
+
+                    <div
+                        class="card-value"
+                        id="recoveryRate">
+                        -
+                    </div>
+
+                </div>
 
             </div>
 
 
-            <div class="amount">
+            <div class="section">
 
-                ₹1,000
+                <button
+                    class="refresh"
+                    onclick="loadDashboard()">
+                    Refresh
+                </button>
+
+                <h2>
+                    Payment Activity
+                </h2>
+
+                <table>
+
+                    <thead>
+
+                        <tr>
+
+                            <th>
+                                Customer
+                            </th>
+
+                            <th>
+                                Amount
+                            </th>
+
+                            <th>
+                                Method
+                            </th>
+
+                            <th>
+                                Status
+                            </th>
+
+                            <th>
+                                Risk
+                            </th>
+
+                            <th>
+                                Recovery
+                            </th>
+
+                        </tr>
+
+                    </thead>
+
+
+                    <tbody id="paymentTable">
+
+                    </tbody>
+
+                </table>
 
             </div>
-
-
-            <div class="customer">
-
-                Customer:
-                <strong>
-                    Shree
-                </strong>
-
-            </div>
-
-
-            <button
-                id="payButton"
-                onclick="startPayment()"
-            >
-
-                Pay ₹1,000
-
-            </button>
-
-
-            <div id="result"></div>
-
 
         </div>
 
 
         <script>
 
-
-            const CUSTOMER_NAME = "Shree";
-
-            const PAYMENT_AMOUNT = 1000;
-
-
-            // =================================================
-            // DISPLAY RESULT
-            // =================================================
-
-            function showResult(
-                className,
-                message
-            ) {
-
-                const resultBox =
-                    document.getElementById(
-                        "result"
-                    );
-
-                resultBox.style.display =
-                    "block";
-
-                resultBox.className =
-                    className;
-
-                resultBox.innerText =
-                    message;
-
-            }
-
-
-            // =================================================
-            // START PAYMENT
-            // =================================================
-
-            async function startPayment() {
-
-
-                const button =
-                    document.getElementById(
-                        "payButton"
-                    );
-
-
-                button.disabled =
-                    true;
-
-
-                showResult(
-                    "processing",
-                    "⏳ Creating secure Razorpay order..."
-                );
-
+            async function loadDashboard() {
 
                 try {
 
+                    // Get analytics
 
-                    // -----------------------------------------
-                    // STEP 1
-                    // CREATE ORDER
-                    // -----------------------------------------
+                    const analyticsResponse =
+                        await fetch("/analytics");
 
-                    const orderResponse =
-                        await fetch(
-                            "/create-order",
-                            {
+                    const analytics =
+                        await analyticsResponse.json();
 
-                                method:
-                                    "POST",
 
-                                headers: {
+                    document.getElementById(
+                        "totalPayments"
+                    ).innerText =
+                        analytics.total_payments;
 
-                                    "Content-Type":
-                                        "application/json"
 
-                                },
+                    document.getElementById(
+                        "failedPayments"
+                    ).innerText =
+                        analytics.failed_payments;
 
-                                body:
-                                    JSON.stringify({
 
-                                        amount:
-                                            PAYMENT_AMOUNT,
+                    document.getElementById(
+                        "recoveredPayments"
+                    ).innerText =
+                        analytics.recovered_payments;
 
-                                        customer_name:
-                                            CUSTOMER_NAME
 
-                                    })
+                    document.getElementById(
+                        "revenueRisk"
+                    ).innerText =
+                        "₹" +
+                        analytics.total_revenue_at_risk;
 
-                            }
+
+                    document.getElementById(
+                        "recoveredRevenue"
+                    ).innerText =
+                        "₹" +
+                        analytics.recovered_revenue;
+
+
+                    document.getElementById(
+                        "recoveryRate"
+                    ).innerText =
+                        analytics.recovery_rate_percent +
+                        "%";
+
+
+                    // Get payments
+
+                    const paymentResponse =
+                        await fetch("/payments");
+
+                    const payments =
+                        await paymentResponse.json();
+
+
+                    const table =
+                        document.getElementById(
+                            "paymentTable"
                         );
 
 
-                    const orderText =
-                        await orderResponse.text();
+                    table.innerHTML = "";
 
-                    let orderData;
 
-                    try {
+                    if (payments.length === 0) {
 
-                        orderData =
-                            JSON.parse(orderText);
+                        table.innerHTML = `
 
-                    } catch (parseError) {
+                            <tr>
 
-                        throw new Error(
+                                <td
+                                    colspan="6"
+                                    class="empty">
 
-                            orderText
-                            ||
-                            "Create-order returned an invalid response."
+                                    No payments found.
 
-                        );
+                                </td>
+
+                            </tr>
+
+                        `;
+
+                        return;
 
                     }
 
 
-                    if (!orderResponse.ok) {
+                    payments.forEach(
+                        function(payment) {
 
-                        throw new Error(
+                            const row =
+                                document.createElement("tr");
 
-                            orderData.detail
-                            ||
-                            orderData.message
-                            ||
-                            "Could not create Razorpay order"
 
-                        );
+                            let statusClass =
+                                payment.status === "success"
+                                ? "success"
+                                : "failed";
 
-                    }
 
+                            let riskClass =
+                                payment.risk_score >= 50
+                                ? "risk-high"
+                                : "risk-low";
 
-                    console.log(
-                        "Razorpay Order:",
-                        orderData
-                    );
 
+                            row.innerHTML = `
 
-                    showResult(
-                        "processing",
-                        "🔐 Opening secure Razorpay Checkout..."
-                    );
+                                <td>
+                                    ${payment.customer_name}
+                                </td>
 
+                                <td>
+                                    ₹${payment.amount}
+                                </td>
 
-                    // -----------------------------------------
-                    // STEP 2
-                    // RAZORPAY OPTIONS
-                    // -----------------------------------------
+                                <td>
+                                    ${payment.payment_method}
+                                </td>
 
-                    const options = {
+                                <td class="${statusClass}">
+                                    ${payment.status}
+                                </td>
 
+                                <td class="${riskClass}">
+                                    ${payment.risk_score}
+                                </td>
 
-                        key:
-                            orderData.key_id,
+                                <td>
+                                    ${payment.recovered
+                                        ? "✓ Recovered"
+                                        : payment.status === "failed"
+                                        ? "Pending"
+                                        : "None"}
+                                </td>
 
+                            `;
 
-                        amount:
-                            orderData.amount,
 
-
-                        currency:
-                            orderData.currency,
-
-
-                        name:
-                            "RecoverAI",
-
-
-                        description:
-                            "Payment Recovery Demo",
-
-
-                        order_id:
-                            orderData.order_id,
-
-
-                        // Explicitly request all supported payment
-                        // methods, including UPI.
-                        // Razorpay/account configuration can still
-                        // determine which methods are ultimately shown.
-                        method: {
-
-                            card: true,
-
-                            netbanking: true,
-
-                            wallet: true,
-
-                            upi: true,
-
-                            emi: true,
-
-                            paylater: true
-
-                        },
-
-
-                        handler:
-                            async function(response) {
-
-
-                                // --------------------------------
-                                // PAYMENT SUCCESS
-                                // --------------------------------
-
-                                console.log(
-                                    "Payment successful:",
-                                    response
-                                );
-
-
-                                showResult(
-                                    "processing",
-                                    "🔍 Verifying payment securely..."
-                                );
-
-
-                                // --------------------------------
-                                // STEP 3
-                                // VERIFY PAYMENT
-                                // --------------------------------
-
-                                const verifyResponse =
-                                    await fetch(
-                                        "/verify-payment",
-                                        {
-
-                                            method:
-                                                "POST",
-
-                                            headers: {
-
-                                                "Content-Type":
-                                                    "application/json"
-
-                                            },
-
-                                            body:
-                                                JSON.stringify({
-
-                                                    razorpay_order_id:
-                                                        response.razorpay_order_id,
-
-                                                    razorpay_payment_id:
-                                                        response.razorpay_payment_id,
-
-                                                    razorpay_signature:
-                                                        response.razorpay_signature
-
-                                                })
-
-                                        }
-                                    );
-
-
-                                const verifyText =
-                                    await verifyResponse.text();
-
-                                let verifyResult;
-
-                                try {
-
-                                    verifyResult =
-                                        JSON.parse(verifyText);
-
-                                } catch (parseError) {
-
-                                    throw new Error(
-
-                                        verifyText
-                                        ||
-                                        "Payment verification returned an invalid response."
-
-                                    );
-
-                                }
-
-
-                                if (!verifyResponse.ok) {
-
-                                    throw new Error(
-
-                                        verifyResult.detail
-                                        ||
-                                        verifyResult.message
-                                        ||
-                                        "Payment verification failed"
-
-                                    );
-
-                                }
-
-
-                                // --------------------------------
-                                // SUCCESS
-                                // --------------------------------
-
-                                showResult(
-
-                                    "success",
-
-                                    "✅ PAYMENT SUCCESSFUL\\n\\n" +
-
-                                    "Payment verified by Razorpay.\\n\\n" +
-
-                                    JSON.stringify(
-                                        verifyResult,
-                                        null,
-                                        2
-                                    )
-
-                                );
-
-
-                                button.disabled =
-                                    false;
-
-                            },
-
-
-                        // -----------------------------------------
-                        // PAYMENT FAILED
-                        // -----------------------------------------
-
-                        modal: {
-
-                            ondismiss:
-                                function() {
-
-                                    console.log(
-                                        "Razorpay checkout closed"
-                                    );
-
-                                    button.disabled =
-                                        false;
-
-                                    showResult(
-                                        "failure",
-                                        "ℹ️ Payment window closed."
-                                    );
-
-                                }
-
-                        },
-
-
-                        // -----------------------------------------
-                        // CUSTOMER DETAILS
-                        // -----------------------------------------
-
-                        prefill: {
-
-                            name:
-                                CUSTOMER_NAME,
-
-                            email:
-                                "shree@example.com",
-
-                            contact:
-                                "9999999999"
-
-                        },
-
-
-                        notes: {
-
-                            customer:
-                                CUSTOMER_NAME,
-
-                            application:
-                                "RecoverAI"
-
-                        },
-
-
-                        theme: {
-
-                            color:
-                                "#3399cc"
-
-                        }
-
-                    };
-
-
-                    // -----------------------------------------
-                    // CREATE RAZORPAY INSTANCE
-                    // -----------------------------------------
-
-                    const razorpay =
-                        new Razorpay(
-                            options
-                        );
-
-
-                    // -----------------------------------------
-                    // REAL-TIME PAYMENT FAILURE
-                    // -----------------------------------------
-
-                    razorpay.on(
-                        "payment.failed",
-                        async function(response) {
-
-
-                            console.log(
-                                "PAYMENT FAILED:",
-                                response
-                            );
-
-
-                            const error =
-                                response.error
-                                || {};
-
-
-                            const reason =
-                                error.reason
-                                ||
-                                "payment_failed";
-
-
-                            const description =
-                                error.description
-                                ||
-                                "Payment failed";
-
-
-                            // --------------------------------
-                            // DISPLAY FAILURE
-                            // --------------------------------
-
-                            showResult(
-
-                                "failure",
-
-                                "❌ PAYMENT FAILED\\n\\n" +
-
-                                description +
-
-                                "\\n\\n" +
-
-                                "⚡ RecoverAI is analyzing the failure. AI availability will not affect the payment status."
-
-                            );
-
-
-                            try {
-
-
-                                // --------------------------------
-                                // TRIGGER RECOVERY ENGINE
-                                // --------------------------------
-
-                                const recoveryResponse =
-                                    await fetch(
-                                        "/recover-payment",
-                                        {
-
-                                            method:
-                                                "POST",
-
-                                            headers: {
-
-                                                "Content-Type":
-                                                    "application/json"
-
-                                            },
-
-                                            body:
-                                                JSON.stringify({
-
-                                                    customer_name:
-                                                        CUSTOMER_NAME,
-
-                                                    amount:
-                                                        PAYMENT_AMOUNT,
-
-                                                    payment_method:
-                                                        "razorpay",
-
-                                                    failure_reason:
-                                                        reason
-
-                                                })
-
-                                        }
-                                    );
-
-
-                                // Read the response safely. This prevents
-                                // errors such as:
-                                // Unexpected token 'I', "Internal S"... is not valid JSON
-                                // when a server/proxy returns plain text.
-                                const recoveryText =
-                                    await recoveryResponse.text();
-
-                                let recoveryResult;
-
-                                try {
-
-                                    recoveryResult =
-                                        JSON.parse(recoveryText);
-
-                                } catch (parseError) {
-
-                                    throw new Error(
-
-                                        recoveryText
-                                        ||
-                                        "Recovery engine returned an invalid response."
-
-                                    );
-
-                                }
-
-
-                                if (!recoveryResponse.ok) {
-
-                                    throw new Error(
-
-                                        recoveryResult.detail
-                                        ||
-                                        recoveryResult.message
-                                        ||
-                                        "Recovery engine failed"
-
-                                    );
-
-                                }
-
-
-                                // --------------------------------
-                                // DISPLAY RECOVERY RESULT
-                                // --------------------------------
-
-                                showResult(
-
-                                    "recovery",
-
-                                    "⚡ RECOVERAI RECOVERY ENGINE\\n\\n" +
-
-                                    "Payment failed: " +
-                                    reason +
-
-                                    "\\n\\n" +
-
-                                    JSON.stringify(
-                                        recoveryResult,
-                                        null,
-                                        2
-                                    )
-
-                                );
-
-
-                            }
-
-                            catch(error) {
-
-
-                                console.error(
-                                    error
-                                );
-
-
-                                showResult(
-
-                                    "failure",
-
-                                    "❌ Payment failed.\\n\\n" +
-
-                                    "RecoverAI recovery analysis could not be completed.\\n\\n" +
-
-                                    error.message
-
-                                );
-
-                            }
-
-
-                            button.disabled =
-                                false;
+                            table.appendChild(row);
 
                         }
                     );
 
 
-                    // -----------------------------------------
-                    // OPEN RAZORPAY
-                    // -----------------------------------------
+                } catch(error) {
 
-                    razorpay.open();
-
-                }
-
-
-                catch(error) {
-
-
-                    console.error(
-                        "Payment error:",
-                        error
-                    );
-
-
-                    showResult(
-
-                        "failure",
-
-                        "❌ Error\\n\\n" +
-                        error.message
-
-                    );
-
-
-                    button.disabled =
-                        false;
+                    console.error(error);
 
                 }
 
             }
 
 
-        </script>
+            loadDashboard();
 
+        </script>
 
     </body>
 
     </html>
-
-    """
+    """)
