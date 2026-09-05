@@ -398,6 +398,4 @@ Built as a project to explore:
 ---
 
 ⭐ If you found this project interesting, consider giving the repository a star!
-
-```
-```
+PLSPLSPLS 😭👆🏻
