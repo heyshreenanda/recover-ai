@@ -7,10 +7,6 @@ class Payment(Base):
 
     __tablename__ = "payments"
 
-    # ---------------------------------------------
-    # PAYMENT INFORMATION
-    # ---------------------------------------------
-
     id = Column(
         Integer,
         primary_key=True,
@@ -39,10 +35,6 @@ class Payment(Base):
         nullable=True
     )
 
-    # ---------------------------------------------
-    # REVENUE RISK
-    # ---------------------------------------------
-
     revenue_at_risk = Column(
         Float,
         default=0
@@ -52,10 +44,6 @@ class Payment(Base):
         Integer,
         default=0
     )
-
-    # ---------------------------------------------
-    # RECOVERY
-    # ---------------------------------------------
 
     recovery_action = Column(
         String

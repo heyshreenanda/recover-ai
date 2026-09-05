@@ -2,9 +2,9 @@ from pydantic import BaseModel
 from typing import Optional
 
 
-# =============================================
+# ------------------------------------------------
 # PAYMENT INPUT
-# =============================================
+# ------------------------------------------------
 
 class Payment(BaseModel):
 
@@ -19,9 +19,9 @@ class Payment(BaseModel):
     failure_reason: Optional[str] = None
 
 
-# =============================================
+# ------------------------------------------------
 # PAYMENT RESPONSE
-# =============================================
+# ------------------------------------------------
 
 class PaymentResponse(BaseModel):
 
@@ -49,16 +49,15 @@ class PaymentResponse(BaseModel):
 
     recovery_message: Optional[str]
 
-    recovery_latency_ms: Optional[float]
+    recovery_latency_ms: Optional[float] = None
 
     class Config:
-
         from_attributes = True
 
 
-# =============================================
+# ------------------------------------------------
 # CUSTOMER HISTORY
-# =============================================
+# ------------------------------------------------
 
 class CustomerHistoryResponse(BaseModel):
 
@@ -77,3 +76,48 @@ class CustomerHistoryResponse(BaseModel):
     recovery_rate_percent: float
 
     payment_history: list[PaymentResponse]
+
+
+# ------------------------------------------------
+# CREATE RAZORPAY ORDER
+# ------------------------------------------------
+
+class RazorpayOrderResponse(BaseModel):
+
+    order_id: str
+
+    amount: int
+
+    currency: str
+
+    key_id: str
+
+
+# ------------------------------------------------
+# PAYMENT VERIFICATION
+# ------------------------------------------------
+
+class PaymentVerification(BaseModel):
+
+    razorpay_payment_id: str
+
+    razorpay_order_id: str
+
+    razorpay_signature: str
+
+    customer_name: str
+
+
+# ------------------------------------------------
+# FAILED PAYMENT FROM CHECKOUT
+# ------------------------------------------------
+
+class FailedPaymentRequest(BaseModel):
+
+    customer_name: str
+
+    amount: float
+
+    payment_method: str
+
+    failure_reason: Optional[str] = "payment_failed"
