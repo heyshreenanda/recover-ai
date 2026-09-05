@@ -7,26 +7,76 @@ class Payment(Base):
 
     __tablename__ = "payments"
 
-    id = Column(Integer, primary_key=True, index=True)
+    # ---------------------------------------------
+    # PAYMENT INFORMATION
+    # ---------------------------------------------
 
-    customer_name = Column(String)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
 
-    amount = Column(Float)
+    customer_name = Column(
+        String,
+        index=True
+    )
 
-    payment_method = Column(String)
+    amount = Column(
+        Float
+    )
 
-    status = Column(String)
+    payment_method = Column(
+        String
+    )
 
-    failure_reason = Column(String, nullable=True)
+    status = Column(
+        String
+    )
 
-    revenue_at_risk = Column(Float)
+    failure_reason = Column(
+        String,
+        nullable=True
+    )
 
-    risk_score = Column(Integer)
+    # ---------------------------------------------
+    # REVENUE RISK
+    # ---------------------------------------------
 
-    recovery_action = Column(String)
+    revenue_at_risk = Column(
+        Float,
+        default=0
+    )
 
-    recovery_status = Column(String)
+    risk_score = Column(
+        Integer,
+        default=0
+    )
 
-    recovered = Column(Boolean)
+    # ---------------------------------------------
+    # RECOVERY
+    # ---------------------------------------------
 
-    recovery_message = Column(String)
+    recovery_action = Column(
+        String
+    )
+
+    recovery_status = Column(
+        String,
+        nullable=True
+    )
+
+    recovered = Column(
+        Boolean,
+        default=False
+    )
+
+    recovery_message = Column(
+        String,
+        nullable=True
+    )
+
+    recovery_latency_ms = Column(
+        Float,
+        nullable=True
+    )
